@@ -7,7 +7,7 @@ else()
 endif()
 
 set(_blosc_extra_args)
-if (DEP_PLATFORM STREQUAL "ARM64")
+if (DEP_PLATFORM STREQUAL "ARM64" OR CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
     list(APPEND _blosc_extra_args
         -DDEACTIVATE_AVX2=ON
         -DDEACTIVATE_SSE2=ON
@@ -25,6 +25,9 @@ bambustudio_add_cmake_project(Blosc
     CMAKE_ARGS
         -DCMAKE_POLICY_VERSION_MINIMUM=3.5
         -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+        -DCMAKE_C_STANDARD=11
+        -DCMAKE_C_STANDARD_REQUIRED=ON
+        "-DCMAKE_C_FLAGS=-std=gnu11"
         -DBUILD_SHARED=${_build_shared} 
         -DBUILD_STATIC=${_build_static}
         -DBUILD_TESTS=OFF 
