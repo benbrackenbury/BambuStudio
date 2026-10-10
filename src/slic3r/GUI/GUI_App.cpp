@@ -1671,6 +1671,63 @@ static std::string decode(std::string const& extra, std::string const& path = {}
     return Slic3r::decode_path(path.c_str());
 }
 
+static void set_plugin_os_type_header(bool requesting_plugin)
+{
+    std::map<std::string, std::string> current_headers = Slic3r::Http::get_extra_headers();
+#if defined(__WINDOWS__)
+    current_headers["X-BBL-OS-Type"] = (requesting_plugin && wxGetApp().is_running_on_arm64()) ? "windows_arm" : "windows";
+#elif defined(__LINUX__)
+    current_headers["X-BBL-OS-Type"] = (requesting_plugin && wxGetApp().is_running_on_arm64()) ? "linux_arm" : "linux";
+#else
+    (void)requesting_plugin;
+    return;
+#endif
+    Slic3r::Http::set_extra_headers(current_headers);
+    BOOST_LOG_TRIVIAL(info) << "set X-BBL-OS-Type to " << current_headers["X-BBL-OS-Type"];
+}
+
+static bool looks_like_plugin_shared_library(const std::string &filename)
+{
+    std::string name = boost::filesystem::path(filename).filename().string();
+    boost::algorithm::to_lower(name);
+    return boost::algorithm::contains(name, "bambu_networking")
+        || boost::algorithm::contains(name, "bambusource")
+        || boost::algorithm::contains(name, "live555");
+}
+
+static bool plugin_archive_matches_host_arch(const std::string &zip_path)
+{
+    mz_zip_archive archive;
+    mz_zip_zero_struct(&archive);
+    if (!open_zip_reader(&archive, zip_path))
+        return false;
+
+    bool match = true;
+    mz_zip_archive_file_stat stat;
+    const mz_uint num_entries = mz_zip_reader_get_num_files(&archive);
+    for (mz_uint i = 0; i < num_entries && match; ++i) {
+        if (!mz_zip_reader_file_stat(&archive, i, &stat) || stat.m_uncomp_size == 0)
+            continue;
+        if (!looks_like_plugin_shared_library(stat.m_filename))
+            continue;
+        auto *iter = mz_zip_reader_extract_iter_new(&archive, i, 0);
+        if (!iter) {
+            match = false;
+            break;
+        }
+        unsigned char hdr[20]{};
+        const size_t n = mz_zip_reader_extract_iter_read(iter, hdr, sizeof(hdr));
+        mz_zip_reader_extract_iter_free(iter);
+        if (!Slic3r::blob_matches_host_shared_library_arch(hdr, n)) {
+            BOOST_LOG_TRIVIAL(error) << "[plugin] archive library " << stat.m_filename
+                                     << " does not match host CPU";
+            match = false;
+        }
+    }
+    close_zip_reader(&archive);
+    return match;
+}
+
 int GUI_App::download_plugin(std::string name, std::string package_name, InstallProgressFn pro_fn, WasCancelledFn cancel_fn)
 {
     int result = 0;
@@ -1695,16 +1752,7 @@ int GUI_App::download_plugin(std::string name, std::string package_name, Install
     fs::path tmp_path = target_file_path;
     tmp_path += format(".%1%%2%", get_current_pid(), ".tmp");
 
-#if defined(__WINDOWS__)
-    if (is_running_on_arm64()) {
-        //set to arm64 for plugins
-        std::map<std::string, std::string> current_headers = Slic3r::Http::get_extra_headers();
-        current_headers["X-BBL-OS-Type"] = "windows_arm";
-
-        Slic3r::Http::set_extra_headers(current_headers);
-        BOOST_LOG_TRIVIAL(info) << boost::format("download_plugin: set X-BBL-OS-Type to windows_arm");
-    }
-#endif
+    set_plugin_os_type_header(true);
 
     // get_url
     std::string  url = get_plugin_url(name, app_config->get_country_code());
@@ -1763,16 +1811,7 @@ int GUI_App::download_plugin(std::string name, std::string package_name, Install
                 result = -1;
         }).perform_sync();
 
-#if defined(__WINDOWS__)
-    if (is_running_on_arm64()) {
-        //set back
-        std::map<std::string, std::string> current_headers = Slic3r::Http::get_extra_headers();
-        current_headers["X-BBL-OS-Type"] = "windows";
-
-        Slic3r::Http::set_extra_headers(current_headers);
-        BOOST_LOG_TRIVIAL(info) << boost::format("download_plugin: set X-BBL-OS-Type back to windows");
-    }
-#endif
+    set_plugin_os_type_header(false);
 
     bool cancel = false;
     if (result < 0) {
@@ -1853,6 +1892,13 @@ int GUI_App::download_plugin(std::string name, std::string package_name, Install
             result = -1;
         });
     http.perform_sync();
+    if (result >= 0 && !plugin_archive_matches_host_arch(target_file_path.string())) {
+        BOOST_LOG_TRIVIAL(error) << "[download_plugin] plugin zip is not native for this CPU";
+        result = -1;
+        err_msg += "[download_plugin] plugin zip is not native for this CPU";
+        boost::system::error_code ec;
+        fs::remove(target_file_path, ec);
+    }
     j["result"] = result < 0 ? "failed" : "success";
     j["error_msg"] = err_msg;
     if (m_agent) {
@@ -1892,6 +1938,11 @@ int GUI_App::install_plugin(std::string name, std::string package_name, InstallP
     // unzip
     mz_zip_archive archive;
     mz_zip_zero_struct(&archive);
+    if (!plugin_archive_matches_host_arch(target_file_path)) {
+        BOOST_LOG_TRIVIAL(error) << "[install_plugin]: plugin zip is not native for this CPU";
+        if (pro_fn) pro_fn(InstallStatusUnzipFailed, 0, cancel);
+        return InstallStatusUnzipFailed;
+    }
     if (!open_zip_reader(&archive, target_file_path)) {
         BOOST_LOG_TRIVIAL(error) << boost::format("[install_plugin]: %1%, open zip file failed")%__LINE__;
         if (pro_fn) pro_fn(InstallStatusDownloadFailed, 0, cancel);
@@ -3260,6 +3311,9 @@ bool GUI_App::on_init_inner()
     else {
         BOOST_LOG_TRIVIAL(info) << boost::format("can not find kernel32, set m_is_arm64 to %1%") %m_is_arm64;
     }
+#elif defined(__aarch64__) || defined(__arm64__)
+    m_is_arm64 = true;
+    BOOST_LOG_TRIVIAL(info) << "m_is_arm64 set from aarch64/arm64 compile target";
 #endif
     // Enable this to get the default Win32 COMCTRL32 behavior of static boxes.
 //    wxSystemOptions::SetOption("msw.staticbox.optimized-paint", 0);
@@ -3815,6 +3869,11 @@ void GUI_App::copy_network_if_available()
             if (boost::algorithm::iends_with(file_path, library_ext)) {
                 std::string file_name = path.filename().string();
                 std::string dest_path = (plugin_folder / file_name).string();
+                if (!Slic3r::shared_library_matches_host_arch(file_path)) {
+                    BOOST_LOG_TRIVIAL(warning) << __FUNCTION__
+                                               << ": skip OTA plugin with mismatched CPU: " << file_name;
+                    continue;
+                }
                 CopyFileResult cfr = copy_file(file_path, dest_path, error_message, false);
                 if (cfr != CopyFileResult::SUCCESS) {
                     BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ": Copying failed(" << cfr << "): " << error_message;

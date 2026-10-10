@@ -1166,7 +1166,10 @@ bool PresetUpdater::priv::get_cached_plugins_version(std::string& cached_version
     if (fs::exists(network_library)
         && fs::exists(player_library)
         && fs::exists(live555_library)
-        && fs::exists(changelog_file))
+        && fs::exists(changelog_file)
+        && shared_library_matches_host_arch(network_library)
+        && shared_library_matches_host_arch(player_library)
+        && shared_library_matches_host_arch(live555_library))
     {
         has_plugins = true;
         std::string description;
@@ -1222,16 +1225,16 @@ void PresetUpdater::priv::sync_plugins(std::string http_url, std::string plugin_
         }
     }
 
-#if defined(__WINDOWS__)
     if (is_arm64) {
-        //set to arm64 for plugins
         std::map<std::string, std::string> current_headers = Slic3r::Http::get_extra_headers();
+#if defined(__WINDOWS__)
         current_headers["X-BBL-OS-Type"] = "windows_arm";
-
-        Slic3r::Http::set_extra_headers(current_headers);
-        BOOST_LOG_TRIVIAL(info) << boost::format("set X-BBL-OS-Type to windows_arm");
-    }
+#elif defined(__LINUX__)
+        current_headers["X-BBL-OS-Type"] = "linux_arm";
 #endif
+        Slic3r::Http::set_extra_headers(current_headers);
+        BOOST_LOG_TRIVIAL(info) << boost::format("set X-BBL-OS-Type to %1%") % current_headers["X-BBL-OS-Type"];
+    }
     try {
         std::map<std::string, Resource> resources
         {
@@ -1242,16 +1245,16 @@ void PresetUpdater::priv::sync_plugins(std::string http_url, std::string plugin_
     catch (std::exception& e) {
         BOOST_LOG_TRIVIAL(warning) << format("[BBL Updater] sync_plugins: %1%", e.what());
     }
-#if defined(__WINDOWS__)
     if (is_arm64) {
-        //set back
         std::map<std::string, std::string> current_headers = Slic3r::Http::get_extra_headers();
+#if defined(__WINDOWS__)
         current_headers["X-BBL-OS-Type"] = "windows";
-
-        Slic3r::Http::set_extra_headers(current_headers);
-        BOOST_LOG_TRIVIAL(info) << boost::format("set X-BBL-OS-Type back to windows");
-    }
+#elif defined(__LINUX__)
+        current_headers["X-BBL-OS-Type"] = "linux";
 #endif
+        Slic3r::Http::set_extra_headers(current_headers);
+        BOOST_LOG_TRIVIAL(info) << boost::format("set X-BBL-OS-Type back to %1%") % current_headers["X-BBL-OS-Type"];
+    }
 
     // The remaining work touches the GUI (wxGetApp().plater(), notifications), which
     // is unsafe once shutdown has begun; bail out if cancellation was requested.
@@ -1671,11 +1674,7 @@ void PresetUpdater::sync(std::string http_url, std::string language, std::string
     // Capture this on the main thread: the background thread must not call
     // GUI::wxGetApp(), which is null once the app starts shutting down (the app
     // pointer is cleared before ~GUI_App runs, and ~GUI_App joins this thread).
-#if defined(__WINDOWS__)
     bool is_arm64 = GUI::wxGetApp().is_running_on_arm64();
-#else
-    bool is_arm64 = false;
-#endif
   
     p->thread = std::thread([this, vendors, http_url, language, plugin_version, is_arm64]() {
         this->p->prune_tmps();

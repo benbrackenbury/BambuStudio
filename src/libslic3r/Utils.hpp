@@ -918,6 +918,11 @@ inline std::string filter_characters(const std::string& str, const std::string& 
 void save_string_file(const boost::filesystem::path& p, const std::string& str);
 void load_string_file(const boost::filesystem::path& p, std::string& str);
 
+// True if `path` is missing? false. Non-ELF files (e.g. JSON) are accepted.
+// ELF shared objects must match this process's CPU (x86-64 vs aarch64).
+bool shared_library_matches_host_arch(const std::string &path);
+bool blob_matches_host_shared_library_arch(const unsigned char *data, size_t n);
+
 } // namespace Slic3r
 
 #if WIN32

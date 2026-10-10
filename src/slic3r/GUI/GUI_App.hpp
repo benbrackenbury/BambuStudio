@@ -289,9 +289,7 @@ private:
 #ifdef __linux__
     bool            m_opengl_initialized{ false };
 #endif
-#if defined(__WINDOWS__)
     bool            m_is_arm64{false};
-#endif
 
 //import model from mall
     wxString       m_download_file_url;
@@ -745,9 +743,7 @@ public:
     std::string     get_download_model_name() {return m_mall_model_download_name;}
 
     std::string     get_remote_version_str() { return version_info.version_str; }
-#if defined(__WINDOWS__)
     bool            is_running_on_arm64() { return m_is_arm64; }
-#endif
 
 
     void            load_url(wxString url);

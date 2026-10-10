@@ -26,6 +26,18 @@ static HMODULE source_module = NULL;
 #else
 static void* networking_module = NULL;
 static void* source_module = NULL;
+
+// Prefer the plugin's own libssl/libcrypto over OpenSSL symbols baked into
+// the PIE executable. Without this, login HTTPS in the plugin can jump into
+// the wrong libcrypto and segfault in SSL_CTX_new.
+static int plugin_dlopen_flags()
+{
+    int flags = RTLD_LAZY | RTLD_LOCAL;
+#ifdef RTLD_DEEPBIND
+    flags |= RTLD_DEEPBIND;
+#endif
+    return flags;
+}
 #endif
 
 
@@ -254,12 +266,16 @@ int NetworkAgent::initialize_network_module(bool using_backup, bool validate_cer
     library = plugin_folder.string() + "/" + std::string("lib") + std::string(BAMBU_NETWORK_LIBRARY) + ".so";
     #endif
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", line %1%, loading network module, using_backup %2%\n")%__LINE__ %using_backup;
+    if (!shared_library_matches_host_arch(library)) {
+        BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << ": network plugin CPU architecture does not match this process: " << library;
+        return -1;
+    }
     module_cert_summary = SummarizeModule(library);
     if (self_cert_summary) {
         module_cert_summary = SummarizeModule(library);
         if (module_cert_summary) {
             if (IsSamePublisher(*self_cert_summary, *module_cert_summary))
-                networking_module = dlopen(library.c_str(), RTLD_LAZY);
+                networking_module = dlopen(library.c_str(), plugin_dlopen_flags());
             else
                 BOOST_LOG_TRIVIAL(info) << "module is from another publisher:" << module_cert_summary->as_print();
         }
@@ -267,7 +283,7 @@ int NetworkAgent::initialize_network_module(bool using_backup, bool validate_cer
             BOOST_LOG_TRIVIAL(info) << "module_cert is null";
     }
     else
-        networking_module = dlopen( library.c_str(), RTLD_LAZY);
+        networking_module = dlopen( library.c_str(), plugin_dlopen_flags());
     if (!networking_module) {
         char* dll_error = dlerror();
         std::string err       = dll_error ? std::string(dll_error) : std::string("(null)");
@@ -380,7 +396,7 @@ int NetworkAgent::initialize_network_module(bool using_backup, bool validate_cer
     get_model_mall_home_url_ptr       =  reinterpret_cast<func_get_model_mall_home_url>(get_network_function("bambu_network_get_model_mall_home_url"));
     get_model_mall_detail_url_ptr     =  reinterpret_cast<func_get_model_mall_detail_url>(get_network_function("bambu_network_get_model_mall_detail_url"));
     get_my_profile_ptr                =  reinterpret_cast<func_get_my_profile>(get_network_function("bambu_network_get_my_profile"));
-    get_my_token_ptr                  =  reinterpret_cast<func_get_my_profile>(get_network_function("bambu_network_get_my_token"));
+    get_my_token_ptr                  =  reinterpret_cast<func_get_my_token>(get_network_function("bambu_network_get_my_token"));
     track_enable_ptr                  =  reinterpret_cast<func_track_enable>(get_network_function("bambu_network_track_enable"));
     track_remove_files_ptr            =  reinterpret_cast<func_track_remove_files>(get_network_function("bambu_network_track_remove_files"));
     track_event_ptr                   =  reinterpret_cast<func_track_event>(get_network_function("bambu_network_track_event"));
@@ -577,7 +593,7 @@ void* NetworkAgent::get_bambu_source_entry()
 #else
     library = plugin_folder.string() + "/" + std::string("lib") + std::string(BAMBU_SOURCE_LIBRARY) + ".so";
 #endif
-    source_module = dlopen( library.c_str(), RTLD_LAZY);
+    source_module = dlopen( library.c_str(), plugin_dlopen_flags());
     /*if (!source_module) {
 #if defined(__WXMAC__)
         library = std::string("lib") + BAMBU_SOURCE_LIBRARY + ".dylib";

@@ -5,6 +5,7 @@
 #include <locale>
 #include <ctime>
 #include <cstdarg>
+#include <cstdint>
 #include <stdio.h>
 #include <filesystem>
 
@@ -1554,6 +1555,45 @@ void save_string_file(const boost::filesystem::path& p, const std::string& str)
     file.exceptions(std::ios_base::failbit | std::ios_base::badbit);
     file.open(p.generic_string(), std::ios_base::binary);
     file.write(str.c_str(), str.size());
+}
+
+bool blob_matches_host_shared_library_arch(const unsigned char *data, size_t n)
+{
+#if defined(_WIN32) || defined(_MSC_VER)
+    (void)data;
+    (void)n;
+    return true;
+#else
+    if (data == nullptr || n < 4)
+        return false;
+    // Not an ELF object (JSON, text, Mach-O on macOS): leave it to the loader.
+    if (!(data[0] == 0x7f && data[1] == 'E' && data[2] == 'L' && data[3] == 'F'))
+        return true;
+    if (n < 20)
+        return false;
+    const uint16_t machine = static_cast<uint16_t>(data[18]) | (static_cast<uint16_t>(data[19]) << 8);
+#if defined(__aarch64__) || defined(__arm64__)
+    return machine == 183; // EM_AARCH64
+#elif defined(__x86_64__)
+    return machine == 62;  // EM_X86_64
+#else
+    return true;
+#endif
+#endif
+}
+
+bool shared_library_matches_host_arch(const std::string &path)
+{
+    if (!boost::filesystem::exists(path))
+        return false;
+    boost::nowide::ifstream ifs(path.c_str(), std::ios::binary);
+    unsigned char hdr[20]{};
+    ifs.read(reinterpret_cast<char *>(hdr), static_cast<std::streamsize>(sizeof(hdr)));
+    const auto n = static_cast<size_t>(ifs.gcount());
+    const bool ok = blob_matches_host_shared_library_arch(hdr, n);
+    if (!ok)
+        BOOST_LOG_TRIVIAL(warning) << "shared library architecture mismatch: " << path;
+    return ok;
 }
 
 void load_string_file(const boost::filesystem::path& p, std::string& str)

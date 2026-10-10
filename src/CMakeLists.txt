@@ -152,6 +152,10 @@ if (NOT WIN32 AND NOT APPLE)
     set_target_properties(BambuStudio PROPERTIES OUTPUT_NAME "bambu-studio")
     set(SLIC3R_APP_CMD "bambu-studio")
     configure_file(${CMAKE_CURRENT_SOURCE_DIR}/platform/unix/BuildLinuxImage.sh.in ${CMAKE_CURRENT_BINARY_DIR}/BuildLinuxImage.sh @ONLY)
+    # PIE executables put globally visible symbols in .dynsym. Statically
+    # linked OpenSSL then interposes on system libcrypto used by libcurl and
+    # the network plugin, which segfaults in SSL_CTX_new during login.
+    target_link_options(BambuStudio PRIVATE "-Wl,--exclude-libs,ALL")
 endif ()
 
 target_link_libraries(BambuStudio libslic3r cereal)
